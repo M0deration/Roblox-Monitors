@@ -3,11 +3,11 @@ const axios = require("axios");
 // ===== CONFIG =====
 const ITEMS = [
   { id: 138860886392452, maxPrice: 90 },
-  { id: 98839119772267, maxPrice: 90 },
-  { id: 11370430006, maxPrice: 5 }
+  { id: 98839119772267, maxPrice: 90 }
 ];
 
-const CHECK_INTERVAL = 30 * 1000; // 30 seconds
+const CHECK_INTERVAL = 60 * 1000; // 60 seconds
+const ITEMS_PER_CHECK = 2; // Check 2 items each interval
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
 // ==================
 
@@ -18,14 +18,8 @@ axios.defaults.headers.common["Accept"] = "application/json";
 
 let index = 0;
 const itemStatus = {};
-let rateLimitedUntil = 0;
 
 async function checkItem(item) {
-  if (Date.now() < rateLimitedUntil) {
-    console.log("[WAIT] Rate limited, skipping check");
-    return;
-  }
-
   try {
     const res = await axios.get(
       `https://economy.roblox.com/v2/assets/${item.id}/details`,
@@ -35,22 +29,12 @@ async function checkItem(item) {
     const data = res.data;
 
     const isOnSale = data.IsForSale;
-    const price =
-      data.Price ??
-      data.PriceInRobux ??
-      data.LowestPrice ??
-      null;
-
+    const price = data.Price ?? data.PriceInRobux ?? data.LowestPrice ?? null;
     const name = data.Name || "Unknown Item";
 
     if (!itemStatus[item.id]) itemStatus[item.id] = false;
 
-    if (
-      isOnSale &&
-      price !== null &&
-      !itemStatus[item.id] &&
-      price <= item.maxPrice
-    ) {
+    if (isOnSale && price !== null && !itemStatus[item.id] && price <= item.maxPrice) {
       const thumbnail = await getThumbnail(item.id);
       await sendDiscordAlert(item.id, name, price, thumbnail);
       itemStatus[item.id] = true;
@@ -58,21 +42,10 @@ async function checkItem(item) {
 
     if (!isOnSale) itemStatus[item.id] = false;
 
-    console.log(
-      `[OK] ${name} (${item.id}) | Sale: ${isOnSale} | Price: ${price ?? "N/A"}`
-    );
+    console.log(`[OK] ${name} (${item.id}) | Sale: ${isOnSale} | Price: ${price ?? "N/A"}`);
 
   } catch (err) {
-    if (err.response?.status === 429) {
-      console.error("[RATE LIMITED] Backing off for 2 minutes");
-      rateLimitedUntil = Date.now() + 2 * 60 * 1000;
-    } else {
-      console.error(
-        `[ERROR] ${item.id}`,
-        err.response?.status,
-        err.response?.data || err.message
-      );
-    }
+    console.error(`[ERROR] ${item.id}`, err.response?.status, err.response?.data || err.message);
   }
 }
 
@@ -113,11 +86,16 @@ async function sendDiscordAlert(id, name, price, thumbnail) {
 (async () => {
   console.log("Monitoring items...");
 
-  await checkItem(ITEMS[index]);
-  index = (index + 1) % ITEMS.length;
-
-  setInterval(async () => {
+  // Initial check for the first ITEMS_PER_CHECK items
+  for (let i = 0; i < ITEMS_PER_CHECK; i++) {
     await checkItem(ITEMS[index]);
     index = (index + 1) % ITEMS.length;
+  }
+
+  setInterval(async () => {
+    for (let i = 0; i < ITEMS_PER_CHECK; i++) {
+      await checkItem(ITEMS[index]);
+      index = (index + 1) % ITEMS.length;
+    }
   }, CHECK_INTERVAL);
 })();
