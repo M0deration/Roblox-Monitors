@@ -7,9 +7,14 @@ const ITEMS = [
   { id: 11370430006, maxPrice: 5 }
 ];
 
-const CHECK_INTERVAL = 10 * 1000;
+const CHECK_INTERVAL = 30 * 1000; // 30 seconds
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
 // ==================
+
+// Required by Roblox APIs
+axios.defaults.headers.common["User-Agent"] =
+  "Mozilla/5.0 (compatible; RobloxItemMonitor/1.0)";
+axios.defaults.headers.common["Accept"] = "application/json";
 
 let index = 0;
 const itemStatus = {};
@@ -17,7 +22,8 @@ const itemStatus = {};
 async function checkItem(item) {
   try {
     const res = await axios.get(
-      `https://economy.roblox.com/v2/assets/${item.id}/details`
+      `https://economy.roblox.com/v2/assets/${item.id}/details`,
+      { timeout: 10000 }
     );
 
     const data = res.data;
@@ -35,38 +41,60 @@ async function checkItem(item) {
 
     if (!isOnSale) itemStatus[item.id] = false;
 
-  } catch {
-    console.log(`Error checking ${item.id}`);
+    console.log(
+      `[OK] ${name} (${item.id}) | Sale: ${isOnSale} | Price: ${price}`
+    );
+
+  } catch (err) {
+    console.error(
+      `[ERROR] ${item.id}`,
+      err.response?.status,
+      err.response?.data || err.message
+    );
   }
 }
 
 async function getThumbnail(assetId) {
-  const res = await axios.get(
-    `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png`
-  );
-  return res.data.data[0].imageUrl;
+  try {
+    const res = await axios.get(
+      `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png`,
+      { timeout: 10000 }
+    );
+    return res.data.data[0]?.imageUrl || null;
+  } catch {
+    return null;
+  }
 }
 
 async function sendDiscordAlert(id, name, price, thumbnail) {
+  if (!DISCORD_WEBHOOK) return;
+
   await axios.post(DISCORD_WEBHOOK, {
     embeds: [
       {
         title: "🚨 Item On Sale",
         description: `**${name}**`,
-        thumbnail: { url: thumbnail },
+        thumbnail: thumbnail ? { url: thumbnail } : undefined,
         fields: [
           { name: "Asset ID", value: id.toString(), inline: true },
           { name: "Price", value: `${price} Robux`, inline: true }
         ],
-        color: 0xffc107
+        color: 0xffc107,
+        footer: { text: "Roblox Item Monitor" },
+        timestamp: new Date().toISOString()
       }
     ]
   });
 }
 
-setInterval(() => {
-  checkItem(ITEMS[index]);
+// Run immediately, then every 30 seconds
+(async () => {
+  console.log("Monitoring items...");
+  await checkItem(ITEMS[index]);
   index = (index + 1) % ITEMS.length;
-}, CHECK_INTERVAL);
 
-console.log("Monitoring items...");
+  setInterval(async () => {
+    await checkItem(ITEMS[index]);
+    index = (index + 1) % ITEMS.length;
+  }, CHECK_INTERVAL);
+})();
