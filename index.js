@@ -2,8 +2,9 @@ const axios = require("axios");
 
 // ===== CONFIG =====
 const ITEMS = [
-  { id: 123456789, maxPrice: 100 },
-  { id: 987654321, maxPrice: 50 }
+  { id: 138860886392452, maxPrice: 90 },
+  { id: 98839119772267, maxPrice: 90 },
+  { id: 11370430006, maxPrice: 5 }
 ];
 
 const CHECK_INTERVAL = 10 * 1000;
