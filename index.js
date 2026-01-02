@@ -1,61 +1,102 @@
 const axios = require("axios");
 
-// ===== CONFIG =====
+// ================= CONFIG =================
 const ITEMS = [
   { id: 138860886392452, maxPrice: 90 },
   { id: 98839119772267, maxPrice: 90 }
 ];
 
-const CHECK_INTERVAL = 60 * 1000; // 60 seconds
-const ITEMS_PER_CHECK = 2; // Check 2 items each interval
+const CHECK_INTERVAL = 3 * 60 * 1000; // 3 minutes
+const REQUEST_SPACING = 2000; // 2 seconds between item checks
+const RATE_LIMIT_COOLDOWN = 10 * 60 * 1000; // 10 minutes
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
-// ==================
+// =========================================
 
-// Roblox requires a User-Agent
-axios.defaults.headers.common["User-Agent"] =
-  "Mozilla/5.0 (compatible; RobloxItemMonitor/1.0)";
-axios.defaults.headers.common["Accept"] = "application/json";
+// axios instance (DO NOT use global axios)
+const client = axios.create({
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept": "application/json"
+  },
+  timeout: 10000
+});
 
-let index = 0;
-const itemStatus = {};
+// state
+const itemStatus = {};     // on-sale state
+const cooldownUntil = {};  // per-item cooldown timestamp
+
+function sleep(ms) {
+  return new Promise(res => setTimeout(res, ms));
+}
 
 async function checkItem(item) {
+  // cooldown check
+  if (cooldownUntil[item.id] && Date.now() < cooldownUntil[item.id]) {
+    return;
+  }
+
   try {
-    const res = await axios.get(
-      `https://economy.roblox.com/v2/assets/${item.id}/details`,
-      { timeout: 10000 }
+    const res = await client.post(
+      "https://catalog.roblox.com/v1/catalog/items/details",
+      {
+        items: [{ itemType: "Asset", id: item.id }]
+      }
     );
 
-    const data = res.data;
+    const data = res.data?.data?.[0];
+    if (!data) return;
 
-    const isOnSale = data.IsForSale;
-    const price = data.Price ?? data.PriceInRobux ?? data.LowestPrice ?? null;
-    const name = data.Name || "Unknown Item";
+    const name = data.name;
+    const isOnSale = data.priceStatus === "OnSale";
+    const price = data.price;
 
-    if (!itemStatus[item.id]) itemStatus[item.id] = false;
+    if (itemStatus[item.id] === undefined) {
+      itemStatus[item.id] = false;
+    }
 
-    if (isOnSale && price !== null && !itemStatus[item.id] && price <= item.maxPrice) {
+    // alert condition
+    if (
+      isOnSale &&
+      price !== null &&
+      price <= item.maxPrice &&
+      itemStatus[item.id] === false
+    ) {
       const thumbnail = await getThumbnail(item.id);
       await sendDiscordAlert(item.id, name, price, thumbnail);
       itemStatus[item.id] = true;
     }
 
-    if (!isOnSale) itemStatus[item.id] = false;
+    // reset state when offsale
+    if (!isOnSale) {
+      itemStatus[item.id] = false;
+    }
 
-    console.log(`[OK] ${name} (${item.id}) | Sale: ${isOnSale} | Price: ${price ?? "N/A"}`);
+    console.log(
+      `[OK] ${name} | Sale: ${isOnSale} | Price: ${price ?? "N/A"}`
+    );
 
   } catch (err) {
-    console.error(`[ERROR] ${item.id}`, err.response?.status, err.response?.data || err.message);
+    if (err.response?.status === 429) {
+      console.warn(`[429] Cooling down item ${item.id}`);
+      cooldownUntil[item.id] = Date.now() + RATE_LIMIT_COOLDOWN;
+    } else {
+      console.error(
+        `[ERROR] ${item.id}`,
+        err.response?.status,
+        err.message
+      );
+    }
   }
+
+  await sleep(REQUEST_SPACING);
 }
 
 async function getThumbnail(assetId) {
   try {
-    const res = await axios.get(
-      `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png`,
-      { timeout: 10000 }
+    const res = await client.get(
+      `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png`
     );
-    return res.data.data[0]?.imageUrl || null;
+    return res.data?.data?.[0]?.imageUrl || null;
   } catch {
     return null;
   }
@@ -64,38 +105,32 @@ async function getThumbnail(assetId) {
 async function sendDiscordAlert(id, name, price, thumbnail) {
   if (!DISCORD_WEBHOOK) return;
 
-  await axios.post(DISCORD_WEBHOOK, {
+  await client.post(DISCORD_WEBHOOK, {
     embeds: [
       {
-        title: "🚨 Item On Sale",
+        title: "🚨 ITEM ON SALE",
         description: `**${name}**`,
         thumbnail: thumbnail ? { url: thumbnail } : undefined,
         fields: [
-          { name: "Asset ID", value: id.toString(), inline: true },
+          { name: "Asset ID", value: String(id), inline: true },
           { name: "Price", value: `${price} Robux`, inline: true }
         ],
         color: 0xffc107,
-        footer: { text: "Roblox Item Monitor" },
+        footer: { text: "Free Safe Monitor" },
         timestamp: new Date().toISOString()
       }
     ]
   });
 }
 
-// ===== MAIN LOOP =====
+// ================= MAIN LOOP =================
 (async () => {
-  console.log("Monitoring items...");
+  console.log("✅ Roblox Item Monitor started (FREE MODE)");
 
-  // Initial check for the first ITEMS_PER_CHECK items
-  for (let i = 0; i < ITEMS_PER_CHECK; i++) {
-    await checkItem(ITEMS[index]);
-    index = (index + 1) % ITEMS.length;
-  }
-
-  setInterval(async () => {
-    for (let i = 0; i < ITEMS_PER_CHECK; i++) {
-      await checkItem(ITEMS[index]);
-      index = (index + 1) % ITEMS.length;
+  while (true) {
+    for (const item of ITEMS) {
+      await checkItem(item);
     }
-  }, CHECK_INTERVAL);
+    await sleep(CHECK_INTERVAL);
+  }
 })();
